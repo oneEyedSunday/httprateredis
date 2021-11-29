@@ -14,16 +14,22 @@ type redisRateLimiter struct {
 	inner        *redis.Client
 	mu           sync.Mutex
 	windowLength time.Duration
+	timeout      time.Duration
 }
 
 func NewRedisRateLimiter(c *redis.Client, windowLength time.Duration) *redisRateLimiter {
-	return newRedisRateLimiter(c, windowLength)
+	return newRedisRateLimiter(c, windowLength, time.Millisecond*50)
 }
 
-func newRedisRateLimiter(c *redis.Client, windowLength time.Duration) *redisRateLimiter {
+func NewRedisRateLimiterWithRedisTimeout(c *redis.Client, windowLength time.Duration, redisTimeout time.Duration) *redisRateLimiter {
+	return newRedisRateLimiter(c, windowLength, redisTimeout)
+}
+
+func newRedisRateLimiter(c *redis.Client, windowLength time.Duration, redisTimeout time.Duration) *redisRateLimiter {
 	return &redisRateLimiter{
 		inner:        c,
 		windowLength: windowLength,
+		timeout:      redisTimeout,
 	}
 }
 
@@ -32,9 +38,11 @@ func (c *redisRateLimiter) Increment(key string, currentWindow time.Time) error 
 	defer c.mu.Unlock()
 
 	hkey := string(httprate.LimitCounterKey(key, currentWindow))
+	ctx, cancelFunc := c.getContextWithTimeout()
+	defer cancelFunc()
 
-	c.inner.Incr(context.TODO(), hkey)
-	c.inner.Expire(context.TODO(), hkey, c.windowLength)
+	c.inner.Incr(ctx, hkey)
+	c.inner.Expire(ctx, hkey, c.windowLength)
 	return nil
 }
 
@@ -42,13 +50,16 @@ func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Ti
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	curr, err := c.inner.Get(context.TODO(), string(httprate.LimitCounterKey(key, currentWindow))).Result()
+	ctx, cancelFunc := c.getContextWithTimeout()
+	defer cancelFunc()
+
+	curr, err := c.inner.Get(ctx, string(httprate.LimitCounterKey(key, currentWindow))).Result()
 
 	if err != nil {
 		return 0, 0, err
 	}
 
-	prev, err := c.inner.Get(context.TODO(), string(httprate.LimitCounterKey(key, previousWindow))).Result()
+	prev, err := c.inner.Get(ctx, string(httprate.LimitCounterKey(key, previousWindow))).Result()
 
 	if err != nil {
 		return 0, 0, err
@@ -65,6 +76,10 @@ func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Ti
 	}
 
 	return currInt, prevInt, nil
+}
+
+func (c *redisRateLimiter) getContextWithTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.TODO(), c.timeout)
 }
 
 var _ httprate.LimitCounter = &redisRateLimiter{}
