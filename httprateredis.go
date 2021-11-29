@@ -2,6 +2,7 @@ package httprateredis
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -37,12 +38,12 @@ func (c *redisRateLimiter) Increment(key string, currentWindow time.Time) error 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	hkey := string(httprate.LimitCounterKey(key, currentWindow))
+	hkey := uintToString(httprate.LimitCounterKey(key, currentWindow))
 	ctx, cancelFunc := c.getContextWithTimeout()
 	defer cancelFunc()
 
 	pipe := c.inner.Pipeline()
-	pipe.Expire(ctx, hkey, c.windowLength)
+	pipe.Expire(ctx, hkey, c.windowLength*3)
 	pipe.Incr(ctx, hkey)
 	_, err := pipe.Exec(ctx)
 
@@ -57,8 +58,8 @@ func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Ti
 	defer cancelFunc()
 
 	pipe := c.inner.Pipeline()
-	pipe.Get(ctx, string(httprate.LimitCounterKey(key, currentWindow)))
-	pipe.Get(ctx, string(httprate.LimitCounterKey(key, previousWindow)))
+	pipe.Get(ctx, uintToString(httprate.LimitCounterKey(key, currentWindow)))
+	pipe.Get(ctx, uintToString(httprate.LimitCounterKey(key, previousWindow)))
 	res, err := pipe.Exec(ctx)
 	if err != nil {
 		curr, _ := strconv.Atoi(res[0].String())
@@ -72,6 +73,10 @@ func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Ti
 
 func (c *redisRateLimiter) getContextWithTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.TODO(), c.timeout)
+}
+
+func uintToString(val uint64) string {
+	return fmt.Sprintf("%v", val)
 }
 
 var _ httprate.LimitCounter = &redisRateLimiter{}
