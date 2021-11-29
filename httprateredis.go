@@ -41,9 +41,12 @@ func (c *redisRateLimiter) Increment(key string, currentWindow time.Time) error 
 	ctx, cancelFunc := c.getContextWithTimeout()
 	defer cancelFunc()
 
-	c.inner.Incr(ctx, hkey)
-	c.inner.Expire(ctx, hkey, c.windowLength)
-	return nil
+	pipe := c.inner.Pipeline()
+	pipe.Expire(ctx, hkey, c.windowLength)
+	pipe.Incr(ctx, hkey)
+	_, err := pipe.Exec(ctx)
+
+	return err
 }
 
 func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Time) (int, int, error) {
@@ -53,29 +56,18 @@ func (c *redisRateLimiter) Get(key string, currentWindow, previousWindow time.Ti
 	ctx, cancelFunc := c.getContextWithTimeout()
 	defer cancelFunc()
 
-	curr, err := c.inner.Get(ctx, string(httprate.LimitCounterKey(key, currentWindow))).Result()
-
+	pipe := c.inner.Pipeline()
+	pipe.Get(ctx, string(httprate.LimitCounterKey(key, currentWindow)))
+	pipe.Get(ctx, string(httprate.LimitCounterKey(key, previousWindow)))
+	res, err := pipe.Exec(ctx)
 	if err != nil {
-		return 0, 0, err
+		curr, _ := strconv.Atoi(res[0].String())
+		prev, _ := strconv.Atoi(res[1].String())
+
+		return curr, prev, nil
 	}
 
-	prev, err := c.inner.Get(ctx, string(httprate.LimitCounterKey(key, previousWindow))).Result()
-
-	if err != nil {
-		return 0, 0, err
-	}
-
-	currInt, err := strconv.Atoi(curr)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	prevInt, err := strconv.Atoi(prev)
-	if err != nil {
-		return currInt, 0, err
-	}
-
-	return currInt, prevInt, nil
+	return 0, 0, err
 }
 
 func (c *redisRateLimiter) getContextWithTimeout() (context.Context, context.CancelFunc) {
